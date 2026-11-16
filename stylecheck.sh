@@ -100,8 +100,14 @@ for scheme in light dark; do
         "$BUILD/scanalyze" "$LOG" "$tab" "$DIR" "${SHOTS[@]}"
     done < <(grep '^stylecheck shots ' "$LOG")
 
+    # the window clicks the third tab of the native bar of QCocoaTabWidget
+    if grep -q '^stylecheck switch' "$LOG"; then
+        echo "-- native tab bar"
+        grep '^stylecheck switch' "$LOG"
+    fi
+
     if (( MENUS )); then
         echo "-- menus"
-        grep -E '^stylecheck (menu|select)' "$LOG"
+        grep -E '^stylecheck (menu|select|popover|alert|preferences|menubar)' "$LOG"
     fi
 done

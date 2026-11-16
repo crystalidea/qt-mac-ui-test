@@ -16,6 +16,7 @@
 // tab ("stylecheck ..." lines) and shoots the tab; the shots are analyzed by this geometry (stylecheck.sh,
 // scanalyze.swift)
 
+class QCocoaPopover;
 class QLineEdit;
 class QTabWidget;
 
@@ -44,6 +45,13 @@ private:
     QWidget *editSection();
     QWidget *pullDownSection();
     QWidget *tabSection();
+    QWidget *cocoaTabSection();
+    QWidget *cocoaControlSection();
+    QWidget *cocoaWindowSection();
+
+    QCocoaPopover *openPopover(QWidget *anchor);
+    int runAlert();
+    QDialog *openPreferences();
 
     void focusPage();
 
@@ -51,6 +59,11 @@ private:
     void nextTab();
     void shootTab();
     void tabShot();
+    void switchCocoaTab();
+    void shootPopover();
+    void shootAlert();
+    void shootPreferences();
+    void shootMenuBarPopover();
     void nextMenu();
 
     QTabWidget *m_tabs = nullptr;
@@ -61,6 +74,7 @@ private:
     bool m_menuShots = false;
     int m_tab = -1;      // the tab of the tour
     QStringList m_menus; // the controls of the tab whose menus are still to be shot
+    int m_cocoaTabChanges = 0; // currentChanged of the regular QCocoaTabWidget
 };
 
 #endif // StyleCheckDialog_h__

@@ -3,8 +3,8 @@
 A window with the Qt controls that need care on macOS under Liquid Glass, each next to the same control made with AppKit, one kind of control on a tab:
 
 - the controls the QMacStyle patches of [qt-build-tools](https://github.com/crystalidea/qt-build-tools) change (`patches/qtbase-macstyle-*.patch`);
-- the native controls of [qcocoacontrols](https://github.com/crystalidea/qcocoacontrols): the list of `QCocoaComboBox` and the pull-down buttons of `QCocoaButtonActionMenu`;
-- `QTabWidget`, which no patch changes yet, next to `NSTabView`.
+- the native controls and windows of [qcocoacontrols](https://github.com/crystalidea/qcocoacontrols): the list of `QCocoaComboBox`, the pull-down buttons of `QCocoaButtonActionMenu`, the buttons, the segmented control, the slider, the box and the gradient buttons, the popover, the alert and the preferences window;
+- `QTabWidget`, which no patch changes yet, next to `NSTabView`, and `QCocoaTabWidget` of qcocoacontrols, whose tabs are the bar of `NSTabView` itself.
 
 A script runs the window in the light and dark appearance: the window shoots its tabs one by one and, on request, its open lists and pull-down menus, and the script measures what can be measured without eyes.
 
@@ -20,6 +20,10 @@ A script runs the window in the light and dark appearance: the window shoots its
 | Lists | QCocoaComboBox | closed, QMacStyle draws QComboBox and QCocoaComboBox alike, as large as the AppKit pop-up button. Open, QComboBox shows a list drawn by Qt, and QCocoaComboBox an NSMenu like the one of the AppKit pop-up button: the current item over the text with a check mark, the separator, the icons, the disabled item |
 | Pull-downs | QCocoaButtonActionMenu | with a title and with an icon only, next to AppKit pull-down buttons with the toolbar bezel: the same size, the title not clipped, the same menu |
 | Tabs | no patch | QTabWidget, regular and small, next to NSTabView with the same three tabs and a check box on each page; a QTabWidget with only the current tab enabled, as an app leaves it while it works (NSTabView can't disable a tab). Look at the tab bar, the selected tab in an active and in an inactive window, the pane under the tabs |
+
+| Native tabs | QCocoaTabWidget | QCocoaTabWidget of qcocoacontrols, regular and small, next to NSTabView, and one with only the current tab enabled. On macOS 27 with Liquid Glass its tabs are the bar of NSTabView, an NSSegmentedControl with the tabs role: the bar, its glass and the pane have to look like the NSTabView next to it. The window clicks the third tab of the regular one and prints what came of it |
+| Cocoa controls | qcocoacontrols | QCocoaButton with the help bezel, as in the main window of MFC, and the textured one of its popovers, QCocoaSegmentedButton as the Auto and Custom switch of MFC, QCocoaSlider, QCocoaBox with a Qt label inside and QCocoaGradientButton under a list, each next to the same AppKit control: the same size, nothing clipped, the contents of the box shown |
+| Popovers | qcocoacontrols | buttons that open QCocoaPopover with the contents MFC shows in it, QCocoaMessageBox, which is a sheet with a check box, and QCocoaPreferencesDialog with two pages. With `--menus` the tour opens and shoots each, and also a popover from an item in the menu bar, as MFC shows it from its icon |
 
 The window keeps its tabs in a QTabWidget too, so the tab bar at the top of it is one more sample.
 
@@ -56,7 +60,7 @@ build/StyleCheck.app/Contents/MacOS/StyleCheck dark
 The script builds the window and the analyzer when needed (`QMAKE` overrides the qmake path) and starts the window once in each appearance. The window shows its tabs one by one: it gives a tab a second to settle, prints the geometry of its controls and shoots it, the Progress tab four times 0.25 s apart and the other tabs once. The window shoots itself from another thread, so its bars keep moving between the frames. Then the analyzer goes through the shots tab by tab. Everything goes to `shots/` or to the directory given as the argument:
 
 - `light.txt`, `dark.txt`: what the window printed;
-- `light/`, `dark/`: the shots of the tabs, `<tab>-<n>.png`, and the crops of the analyzer: each tab without the window around it (`sc_group_<tab>.png`), the table, tree and list, the tab widgets of the Tabs tab (`sc_tabs_*.png`, `ns_tabs_*.png`); with `--menus` also the shots of the menus;
+- `light/`, `dark/`: the shots of the tabs, `<tab>-<n>.png`, `cocoatabs-switched.png` after the click on the native tab bar, and the crops of the analyzer: each tab without the window around it (`sc_group_<tab>.png`), the table, tree and list, the tab widgets of the Tabs tab (`sc_tabs_*.png`, `ns_tabs_*.png`); with `--menus` also the shots of the menus;
 - `build.log`.
 
 What the shots need:
@@ -72,6 +76,8 @@ Under `-- <tab>` the analyzer prints:
 - `visible`: the visible size of a control in points, with 2 pt around the widget for what AppKit draws beyond the frame (6 pt around the focused edit for its focus ring). Compare the pairs `sc_…` (Qt) and `ns_…` (AppKit) of the same size.
 - `crop`: a crop to look at rather than measure, the item views and the tab widgets.
 
+Under `-- native tab bar` comes the line `stylecheck switch sc_cocoa_tabs_regular native=1 current=2 changes=1 segment=2`: the click on the third tab reached the native bar of QCocoaTabWidget, and QTabWidget took it as from its own bar. `native=0` means QCocoaTabWidget is a plain QTabWidget on this system.
+
 ### Lists and menus
 
 With `--menus` the window opens the lists of the Lists tab and the pull-down menus of the Pull-downs tab right after it shoots the tab, one by one, each Qt control followed by its AppKit sample. It shoots each a second after it opens and closes it with Escape. The shots go next to the shots of the tabs. The window opens the menus itself and closes them with keys it posts to its own event queue, so this works in an inactive window and on a locked Mac. A menu gets up to two shots:
@@ -80,6 +86,13 @@ With `--menus` the window opens the lists of the Lists tab and the pull-down men
 - `<control>.png`, the screen around the control with its menu, only when the Mac isn't locked.
 
 The line `stylecheck menu <control> window=N menu=1 region=1` tells which of them was taken. The last step chooses the next item of QCocoaComboBox with Down and Return: `stylecheck select sc_combo_native current=2 text="CPU Core Average" activated=1` means the choice came through as from the list of Qt.
+
+On the Popovers tab the window opens the windows of qcocoacontrols the same way, each shot by the number of its window, `sc_<window>-menu.png`, and printed with a line of its own:
+
+- `sc_popover`: QCocoaPopover over the Popover button, with the contents MFC shows in its popovers; the window posts Escape and closes it itself if it is still open. `stylecheck popover escape=1` means Escape closed it;
+- `sc_alert`: QCocoaMessageBox with a check box, a sheet of the window; Return presses its default button, and `stylecheck alert result=16384 yes=1` means exec() returned Yes;
+- `sc_preferences` and `sc_preferences-2`: QCocoaPreferencesDialog with two pages, before and after its toolbar switches to the second one; `stylecheck preferences title="Advanced"` tells the title of the window then;
+- `sc_menubar_popover`: a popover from an item the window puts into the menu bar for a few seconds, as MFC shows it from its icon. `stylecheck menubar item=x,y popover=N` tells where the item was; with no room in the menu bar there is no shot around it.
 
 ## Reference results
 
@@ -110,6 +123,19 @@ QTabWidget, which no patch changes, next to NSTabView of the same size (the Tabs
 - the tab bar is 196 × 23 pt in Qt and 210 × 23.5 pt in AppKit with the same titles, the small one 169 × 18 and 182 × 20 pt. Qt puts it at the top edge of the widget, AppKit 4.5 pt lower (2.5 pt the small one);
 - the pane of QTabWidget fills the widget from the middle of the tab bar down to its edges, with corners rounded by about 12 pt and no border in the light appearance. NSTabView draws its bezel 7 pt off the sides of its frame and 10 pt off the bottom, with corners rounded by about 4 pt and a hairline border in both appearances;
 - a disabled tab: QMacStyle grays its title, NSTabView can't disable a tab. An NSSegmentedControl with the `tabs` role ignores a click on a disabled segment, but on macOS 27.0 draws its title as the title of an enabled one.
+
+QCocoaTabWidget next to NSTabView (the Native tabs tab, 2026-11-16, an active window): the bar, its glass and the pane look the same as in NSTabView, and the fill and the border of the pane match it to the pixel value in both appearances. The bar lies where NSTabView has it, 4.5 pt from the top of the widget (2.5 pt the small one), and the pages start at 10, 33 pt (10, 25 pt). The click on the third tab gives `current=2 changes=1 segment=2`. The disabled tabs look like the enabled ones, as AppKit 27.0 draws them in this bar.
+
+Controls of qcocoacontrols next to the same AppKit controls (the Cocoa controls tab, 2026-11-16):
+
+- QCocoaButton with the help bezel (24 × 24 pt) and the textured one (72 × 20 pt), QCocoaSegmentedButton as the Auto and Custom switch (122 × 24 pt), QCocoaSlider (160 × 19.5 pt) and QCocoaGradientButton under a list are the same as AppKit; the title of the textured button is gray in both;
+- QCocoaBox draws the box and its title like NSBox, and the label Qt draws inside it in the text color of the appearance.
+
+The windows of qcocoacontrols (the Popovers tab, 2026-11-16):
+
+- QCocoaPopover opens over the button and from the item in the menu bar with its contents, and the glass of the popover shows through them as in a native popover. Escape closes it, `escape=1`. The window deletes the QCocoaPopover of the menu bar while the popover still closes with its animation, and goes on;
+- QCocoaMessageBox is a sheet with Liquid Glass and the check box; the standard buttons show their titles without mnemonics, `Yes` and `No`, the default one on the right;
+- QCocoaPreferencesDialog shows its toolbar with the two pages and switches between them.
 
 ## Cleanup
 

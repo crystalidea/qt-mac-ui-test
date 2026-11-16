@@ -8,9 +8,19 @@
 #import <AppKit/AppKit.h>
 
 #include <qcocoaappearance.h>
+#include <qcocoabox.h>
+#include <qcocoabutton.h>
 #include <qcocoabuttonactionmenu.h>
 #include <qcocoacombobox.h>
+#include <qcocoagradientbutton.h>
 #include <qcocoaicon.h>
+#include <qcocoamenubaritem.h>
+#include <qcocoamessagebox.h>
+#include <qcocoapopover.h>
+#include <qcocoapreferencesdialog.h>
+#include <qcocoasegmentedbutton.h>
+#include <qcocoaslider.h>
+#include <qcocoatabwidget.h>
 
 // A private but exported QtCore function (qcore_mac_p.h): QMacStyle draws the controls for Liquid Glass when it
 // returns true, and only then the qtbase-macstyle-*.patch patches take effect
@@ -27,6 +37,9 @@ namespace
     // the tab widgets on the Tabs tab, Qt and AppKit alike: three tabs and a page with a check box
     const int kTabsWidth = 300;
     const int kTabsHeight = 100;
+const int kSliderWidth = 160;
+const int kBoxWidth = 200;
+const int kBoxHeight = 70;
 
     // the property of a QCocoaButtonActionMenu with its QMenu: the menu finds the NSPopUpButton of the control
     const char *kPullDownMenu = "styleCheckMenu";
@@ -301,6 +314,74 @@ namespace
         return tabs;
     }
 
+    // QCocoaTabWidget with the tabs of the NSTabView next to it. The tab widget takes the size attribute, as
+    // WindowHelpers::Darwin::setWidgetSmallFont() of our apps gives it; the bar gets it too for the plain QTabWidget
+    // QCocoaTabWidget is before macOS 27
+    QCocoaTabWidget *cocoaTabWidget(const char *name, Qt::WidgetAttribute size)
+    {
+        QCocoaTabWidget *tabs = named(new QCocoaTabWidget, name, size);
+        tabs->tabBar()->setAttribute(size);
+
+        for (const QString &title : tabTitles())
+        {
+            QCheckBox *box = new QCheckBox("Option");
+            box->setAttribute(size);
+            box->setChecked(true);
+
+            QWidget *page = new QWidget;
+            QVBoxLayout *layout = new QVBoxLayout(page);
+            layout->addWidget(box);
+            layout->addStretch();
+
+            tabs->addTab(page, title);
+        }
+
+        tabs->setFixedSize(kTabsWidth, kTabsHeight);
+
+        return tabs;
+    }
+
+    // The native bar of a QCocoaTabWidget: the NSSegmentedControl over its QTabBar
+    NSSegmentedControl *nativeTabBar(QTabWidget *tabs)
+    {
+        NSView *root = reinterpret_cast<NSView *>(tabs->window()->winId());
+        const QRect bar(tabs->tabBar()->mapTo(tabs->window(), QPoint(0, 0)), tabs->tabBar()->size());
+        NSMutableArray<NSView *> *views = [NSMutableArray arrayWithObject:root];
+
+        while (views.count)
+        {
+            NSView *view = views.lastObject;
+            [views removeLastObject];
+
+            if ([view isKindOfClass:[NSSegmentedControl class]])
+            {
+                const NSRect frame = [view convertRect:view.bounds toView:root];
+
+                if (bar.contains(QPoint(qRound(NSMidX(frame)), qRound(NSMidY(frame)))))
+                    return static_cast<NSSegmentedControl *>(view);
+            }
+
+            [views addObjectsFromArray:view.subviews];
+        }
+
+        return nil;
+    }
+
+    // A click of the mouse, as the window gets it from the system
+    void postClick(NSView *view, NSPoint point)
+    {
+        const NSPoint location = [view convertPoint:point toView:nil];
+
+        for (const NSEventType type : {NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp})
+        {
+            [NSApp postEvent:[NSEvent mouseEventWithType:type location:location modifierFlags:0
+                                               timestamp:NSProcessInfo.processInfo.systemUptime
+                                            windowNumber:view.window.windowNumber context:nil eventNumber:0
+                                              clickCount:1 pressure:1]
+                     atStart:NO];
+        }
+    }
+
     // A tab of the window: a line on what it checks, then what the caller puts into the layout
     QWidget *page(const char *name, const QString &checks, QVBoxLayout *&layout)
     {
@@ -351,6 +432,9 @@ namespace
 
         if (tab == "pulldowns")
             return {"sc_pd_text", "ns_pd_text", "sc_pd_icon", "ns_pd_icon"};
+
+        if (tab == "cocoawindows")
+            return {"popover", "alert", "preferences", "menubar"};
 
         return {};
     }
@@ -430,56 +514,200 @@ namespace
         return locked;
     }
 
+    // The front window of this process other than the given one, below the menu bar: a sheet, a panel
+    CGWindowID frontWindow(CGWindowID except)
+    {
+        CGWindowID found = 0;
+        CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+
+        // the list goes from the front to the back
+        for (NSDictionary *info in (__bridge NSArray *)windows)
+        {
+            const CGWindowID number = [info[(id)kCGWindowNumber] unsignedIntValue];
+
+            if ([info[(id)kCGWindowOwnerPID] intValue] == getpid() && number != except &&
+                [info[(id)kCGWindowLayer] intValue] < kCGStatusWindowLevel)
+            {
+                found = number;
+                break;
+            }
+        }
+
+        if (windows)
+            CFRelease(windows);
+
+        return found;
+    }
+
+    // The window of the open NSPopover of this process
+    CGWindowID popoverWindow()
+    {
+        for (NSWindow *window in NSApp.windows)
+        {
+            if (window.visible && [NSStringFromClass([window class]) containsString:@"Popover"])
+                return CGWindowID(window.windowNumber);
+        }
+
+        return 0;
+    }
+
+    // How a window is closed after its shot: a menu with Escape, or with Down and Return to choose the next item, an
+    // alert with Return, which presses its default button. The caller closes the other windows itself
+    enum class Close { Escape, NextItem, Return, ByCaller };
+
     // While an NSMenu is open, the main thread stays in its tracking loop until the menu closes. So a second after the
-    // menu opens another thread shoots it and closes it: with Escape, or with Down and Return to choose the next item.
-    // The keys go to the event queue of the app and reach the menu in an inactive app too. The list of QComboBox
-    // doesn't block, it is shot and closed the same way.
+    // menu opens another thread shoots it and closes it with keys. The keys go to the event queue of the app and reach
+    // the menu in an inactive app too. The list of QComboBox doesn't block, and popovers, alerts and other windows are
+    // shot the same way.
     //
-    // Two shots of each menu:
-    // - <file>-menu.png by the number of the menu window. The list of QComboBox comes alone, an NSMenu together with
-    //   the window under it, cut to that window. It works on a locked Mac, as long as the display is on;
-    // - <file>.png, the screen around the control with its menu, when the Mac isn't locked.
+    // Two shots of each:
+    // - <file>-menu.png by the number of the window: the one window() gives, or else the front window of this process
+    //   above the normal ones, an open menu or the list of QComboBox. An NSMenu comes together with the window under
+    //   it, cut to that window. It works on a locked Mac, as long as the display is on;
+    // - <file>.png, the screen around the control, when there is a control and the Mac isn't locked.
     //
     // then, if given, runs on the main thread of the context once the keys are posted: the list of QComboBox doesn't
     // block, and the tour goes on from there
-    void shootLater(const QString &dir, const QString &file, const QRect &control, bool select,
-                    QObject *context = nullptr, const std::function<void()> &then = {})
+    void shootLater(const QString &dir, const QString &file, const QRect &control, Close close,
+                    QObject *context = nullptr, const std::function<void()> &then = {},
+                    const std::function<CGWindowID()> &window = {})
     {
-        // an NSMenu opens over the control, the list of QComboBox below it
-        const QRect region(control.x() - 60, std::max(0, control.y() - 320), std::max(control.width(), 320) + 160, 960);
+        // an NSMenu opens over the control, the list of QComboBox below it; the region keeps to the screen
+        QRect region(control.x() - 60, control.y() - 320, std::max(control.width(), 320) + 160, 960);
+
+        if (const QScreen *screen = QGuiApplication::screenAt(control.center()))
+            region = region.intersected(screen->geometry());
+
         const QByteArray regionShot = QString("screencapture -x -R %1,%2,%3,%4 '%5/%6.png'").arg(region.x())
             .arg(region.y()).arg(region.width()).arg(region.height()).arg(dir, file).toUtf8();
-        const bool locked = screenLocked();
+        const bool regionWanted = !control.isNull() && !screenLocked();
 
-        // A block captures a C++ reference as a reference, and the objects behind dir, file and then are gone by the
-        // time it runs: it gets copies of its own
-        const QByteArray menuShot = QString("%1/%2-menu.png").arg(dir, file).toUtf8();
+        // A block captures a C++ reference as a reference, and the objects behind dir, file, then and window are gone
+        // by the time it runs: it gets copies of its own
+        const QByteArray windowShot = QString("%1/%2-menu.png").arg(dir, file).toUtf8();
         const QByteArray name = file.toUtf8();
         const std::function<void()> next = then;
+        const std::function<CGWindowID()> find = window;
 
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             [NSThread sleepForTimeInterval:1.0];
 
-            const CGWindowID window = topPopUpWindow();
-            const bool menu = window && shootWindow(window, menuShot);
-            const bool region = !locked && system(regionShot.constData()) == 0;
+            const CGWindowID number = find ? find() : topPopUpWindow();
+            const bool shot = number && shootWindow(number, windowShot);
+            const bool region = regionWanted && system(regionShot.constData()) == 0;
 
-            printf("stylecheck menu %s window=%u menu=%d region=%d\n", name.constData(), window, int(menu), int(region));
+            printf("stylecheck menu %s window=%u menu=%d region=%d\n", name.constData(), number, int(shot), int(region));
             fflush(stdout);
 
-            if (select)
+            switch (close)
             {
+            case Close::Escape:
+                postKey(53, @"\e");
+                break;
+
+            case Close::NextItem:
                 postKey(125, [NSString stringWithFormat:@"%C", unichar(NSDownArrowFunctionKey)]);
                 [NSThread sleepForTimeInterval:0.3];
                 postKey(36, @"\r");
+                break;
+
+            case Close::Return:
+                postKey(36, @"\r");
+                break;
+
+            case Close::ByCaller:
+                break;
             }
-            else
-                postKey(53, @"\e");
 
             if (next)
                 QMetaObject::invokeMethod(context, next, Qt::QueuedConnection);
         });
     }
+
+    NSButton *nativeButton(NSString *title, NSBezelStyle bezel)
+    {
+        NSButton *button = [NSButton buttonWithTitle:title target:nil action:nil];
+        button.bezelStyle = bezel;
+        [button sizeToFit];
+
+        return button;
+    }
+
+    // What MFC shows in its popovers: a text, a check box and two buttons with the textured bezel of QCocoaButton. A
+    // top-level widget, as QCocoaPopover wants it
+    QWidget *popoverContents()
+    {
+        QWidget *contents = new QWidget;
+        QVBoxLayout *layout = new QVBoxLayout(contents);
+
+        QLabel *text = new QLabel("Fan control is limited on this Mac: the fans don't go below their minimum speed.");
+        text->setWordWrap(true);
+        text->setFixedWidth(280);
+        layout->addWidget(text);
+
+        QCheckBox *again = new QCheckBox("Don't show again");
+        again->setAttribute(Qt::WA_MacSmallSize);
+        layout->addWidget(again);
+
+        QHBoxLayout *buttons = new QHBoxLayout;
+        buttons->addStretch();
+
+        for (const char *title : {"Close", "More Info"})
+        {
+            QCocoaButton *button = new QCocoaButton(contents);
+            button->setBezelStyle(QCocoaButton::TexturedRounded);
+            button->setText(title);
+            buttons->addWidget(button);
+        }
+
+        layout->addLayout(buttons);
+
+        return contents;
+    }
+
+    // A page of the sample preferences: the controls MFC has on its pages
+    class SamplePreferencesPage : public QPreferencesPage
+    {
+    public:
+
+        SamplePreferencesPage(const QString &title, QCocoaIcon::StandardIcon icon)
+            : QPreferencesPage(nullptr), _title(title), _icon(icon)
+        {
+            QFormLayout *form = new QFormLayout(this);
+
+            form->addRow(new QCheckBox("Start at login"));
+
+            QComboBox *mode = new QCocoaComboBox;
+            mode->addItems({"Automatic", "Constant RPM", "Sensor-based"});
+            form->addRow("Fan mode:", mode);
+
+            QSpinBox *speed = new QSpinBox;
+            speed->setRange(0, 6000);
+            speed->setValue(2400);
+            form->addRow("Speed:", speed);
+        }
+
+        QString getTitle() const override
+        {
+            return _title;
+        }
+
+        QIcon getIcon() const override
+        {
+            return QIcon(QCocoaIcon::standardIcon(_icon, 32));
+        }
+
+        // the dialog takes the size the page has here
+        void updateLayout() override
+        {
+            adjustSize();
+        }
+
+    private:
+
+        QString _title;
+        QCocoaIcon::StandardIcon _icon;
+    };
 }
 
 StyleCheckDialog::StyleCheckDialog(Qt::ColorScheme scheme, QWidget *parent)
@@ -521,6 +749,9 @@ StyleCheckDialog::StyleCheckDialog(Qt::ColorScheme scheme, QWidget *parent)
     m_tabs->addTab(comboSection(), "Lists");
     m_tabs->addTab(pullDownSection(), "Pull-downs");
     m_tabs->addTab(tabSection(), "Tabs");
+    m_tabs->addTab(cocoaTabSection(), "Native tabs");
+    m_tabs->addTab(cocoaControlSection(), "Cocoa controls");
+    m_tabs->addTab(cocoaWindowSection(), "Popovers");
 
     connect(m_tabs, &QTabWidget::currentChanged, this, &StyleCheckDialog::focusPage);
 
@@ -837,6 +1068,292 @@ QWidget *StyleCheckDialog::tabSection()
     return tab;
 }
 
+QWidget *StyleCheckDialog::cocoaTabSection()
+{
+    QCocoaTabWidget *regular = cocoaTabWidget("sc_cocoa_tabs_regular", Qt::WA_MacNormalSize);
+
+    const QString checks = regular->hasNativeTabBar()
+        ? "QCocoaTabWidget of qcocoacontrols next to NSTabView"
+        : "QCocoaTabWidget of qcocoacontrols, a plain QTabWidget here: its native bar needs macOS 27 and Liquid Glass";
+
+    QGridLayout *grid = nullptr;
+    QWidget *tab = section("sc_group_cocoatabs", checks, grid);
+
+    addRow(grid, "regular", regular, nativeTabs("ns_cocoa_tabs_regular", NSControlSizeRegular));
+    addRow(grid, "small", cocoaTabWidget("sc_cocoa_tabs_small", Qt::WA_MacSmallSize),
+           nativeTabs("ns_cocoa_tabs_small", NSControlSizeSmall));
+
+    // as an app leaves it while it works: AppKit 27.0 draws the disabled tabs of this bar like the enabled ones
+    QCocoaTabWidget *disabled = cocoaTabWidget("sc_cocoa_tabs_disabled", Qt::WA_MacNormalSize);
+    disabled->tabBar()->setTabEnabled(1, false);
+    disabled->tabBar()->setTabEnabled(2, false);
+    addRow(grid, "disabled tabs", disabled);
+
+    QObject::connect(regular, &QTabWidget::currentChanged, this, [this] { ++m_cocoaTabChanges; });
+
+    return tab;
+}
+
+QWidget *StyleCheckDialog::cocoaControlSection()
+{
+    QGridLayout *grid = nullptr;
+    QWidget *tab = section("sc_group_cocoacontrols",
+                           "Controls of qcocoacontrols, native views in a Qt layout, next to the same AppKit controls", grid);
+
+    // the help button of the main window of MFC
+    QCocoaButton *help = named(new QCocoaButton(nullptr), "sc_cb_help");
+    help->setBezelStyle(QCocoaButton::HelpButton);
+    addRow(grid, "help button", help, nativeWidget(nativeButton(@"", NSBezelStyleHelpButton), "ns_cb_help"));
+
+    // the buttons of the popovers of MFC
+    QCocoaButton *textured = named(new QCocoaButton(nullptr), "sc_cb_textured");
+    textured->setBezelStyle(QCocoaButton::TexturedRounded);
+    textured->setText("More Info");
+    addRow(grid, "textured rounded", textured,
+           nativeWidget(nativeButton(@"More Info", NSBezelStyle(QCocoaButton::TexturedRounded)), "ns_cb_textured"));
+
+    // the Auto and Custom switch of a fan in MFC; QCocoaSegmentedButton takes the small font
+    QCocoaSegmentedButton *segmented = named(new QCocoaSegmentedButton, "sc_cb_segmented");
+    segmented->setSegmentStyle(QCocoaSegmentedButton::SegmentStyleRounded);
+    segmented->setSegmentCount(2);
+    segmented->setTrackingMode(QCocoaSegmentedButton::NSSegmentSwitchTrackingSelectOne);
+    segmented->setSegmentTitle(0, "Auto");
+    segmented->setSegmentTitle(1, "Custom…");
+    segmented->setSegmentChecked(0, true);
+
+    NSSegmentedControl *nativeSegmented = [NSSegmentedControl segmentedControlWithLabels:@[@"Auto", @"Custom…"]
+                                                                            trackingMode:NSSegmentSwitchTrackingSelectOne
+                                                                                  target:nil action:nil];
+    nativeSegmented.segmentStyle = NSSegmentStyleRounded;
+    nativeSegmented.font = [NSFont controlContentFontOfSize:[NSFont systemFontSizeForControlSize:NSControlSizeSmall]];
+    nativeSegmented.selectedSegment = 0;
+    [nativeSegmented sizeToFit];
+    addRow(grid, "segmented", segmented, nativeWidget(nativeSegmented, "ns_cb_segmented"));
+
+    QCocoaSlider *slider = named(new QCocoaSlider, "sc_cb_slider");
+    slider->setRange(0, 100);
+    slider->setValue(40);
+    slider->setFixedWidth(kSliderWidth);
+    addRow(grid, "slider", slider,
+           nativeWidget([NSSlider sliderWithValue:40 minValue:0 maxValue:100 target:nil action:nil], "ns_cb_slider",
+                        kSliderWidth));
+
+    // the contents of QCocoaBox are Qt widgets inside the native box
+    QCocoaBox *box = named(new QCocoaBox, "sc_cb_box");
+    box->setTitle("Box");
+    box->setContentWidget(new QLabel("Contents"));
+    box->setFixedSize(kBoxWidth, kBoxHeight);
+
+    NSBox *nativeBox = [[[NSBox alloc] initWithFrame:NSMakeRect(0, 0, kBoxWidth, kBoxHeight)] autorelease];
+    nativeBox.title = @"Box";
+    NSTextField *contents = [NSTextField labelWithString:@"Contents"];
+    contents.frameOrigin = NSMakePoint(8, 8);
+    [nativeBox.contentView addSubview:contents];
+    addRow(grid, "box", box, nativeWidget(nativeBox, "ns_cb_box", kBoxWidth, kBoxHeight));
+
+    // the buttons under a list, as in System Settings: add, remove and an empty disabled segment up to the width
+    QWidget *gradient = new QWidget;
+    gradient->setObjectName("sc_cb_gradient");
+    QVBoxLayout *column = new QVBoxLayout(gradient);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
+
+    QListWidget *list = new QListWidget;
+    list->addItems({"Silent", "Default"});
+    list->setFixedSize(kBoxWidth, 52);
+
+    QCocoaGradientButton *buttons = new QCocoaGradientButton;
+    buttons->setSegmentCount(2);
+    buttons->setSegmentIcon(0, QCocoaIcon::Add);
+    buttons->setSegmentIcon(1, QCocoaIcon::Remove);
+    buttons->attachToWidget(list);
+
+    column->addWidget(list);
+    column->addWidget(buttons);
+
+    NSSegmentedControl *nativeGradient = [[[NSSegmentedControl alloc] initWithFrame:NSZeroRect] autorelease];
+    nativeGradient.segmentStyle = NSSegmentStyleSmallSquare;
+    nativeGradient.trackingMode = NSSegmentSwitchTrackingMomentary;
+    nativeGradient.segmentCount = 3;
+    [nativeGradient setImage:[NSImage imageNamed:NSImageNameAddTemplate] forSegment:0];
+    [nativeGradient setImage:[NSImage imageNamed:NSImageNameRemoveTemplate] forSegment:1];
+    [nativeGradient setEnabled:NO forSegment:2];
+    [nativeGradient setWidth:24 forSegment:0];
+    [nativeGradient setWidth:24 forSegment:1];
+    [nativeGradient setWidth:kBoxWidth - 52 forSegment:2];
+    [nativeGradient sizeToFit];
+    addRow(grid, "gradient buttons", gradient, nativeWidget(nativeGradient, "ns_cb_gradient"));
+
+    return tab;
+}
+
+QWidget *StyleCheckDialog::cocoaWindowSection()
+{
+    QVBoxLayout *layout = nullptr;
+    QWidget *tab = page("sc_group_cocoawindows",
+                        "Windows of qcocoacontrols: QCocoaPopover, QCocoaMessageBox, QCocoaPreferencesDialog and a popover "
+                        "from the menu bar,\nas MFC shows them. With --menus the tour opens and shoots each", layout);
+
+    QGridLayout *grid = new QGridLayout;
+    grid->setColumnStretch(2, 1);
+    layout->addLayout(grid);
+    layout->addStretch();
+
+    QPushButton *popover = pushButton("sc_open_popover", "Popover…", Qt::WA_MacNormalSize);
+    connect(popover, &QPushButton::clicked, this, [this, popover] { openPopover(popover); });
+    addRow(grid, "popover", popover);
+
+    QPushButton *alert = pushButton("sc_open_alert", "Alert…", Qt::WA_MacNormalSize);
+    connect(alert, &QPushButton::clicked, this, [this] { runAlert(); });
+    addRow(grid, "alert, a sheet", alert);
+
+    QPushButton *preferences = pushButton("sc_open_preferences", "Preferences…", Qt::WA_MacNormalSize);
+    connect(preferences, &QPushButton::clicked, this, [this] { openPreferences(); });
+    addRow(grid, "preferences", preferences);
+
+    return tab;
+}
+
+QCocoaPopover *StyleCheckDialog::openPopover(QWidget *anchor)
+{
+    // a popover of its own for each click; the closed ones stay with the window
+    QCocoaPopover *popover = new QCocoaPopover(this, popoverContents());
+    popover->show(anchor);
+
+    return popover;
+}
+
+int StyleCheckDialog::runAlert()
+{
+    // with a parent the alert is a sheet of its window, in a modal loop of AppKit
+    QCocoaMessageBox box(QMessageBox::Question, "Style Check", "Delete the preset “Silent”?",
+                         QMessageBox::Yes | QMessageBox::No, this);
+    box.setInformativeText("Its fans go back to the automatic control.");
+    box.setCheckBox(new QCheckBox("Don't ask again"));
+    box.setDefaultButton(QMessageBox::Yes);
+
+    return box.exec();
+}
+
+QDialog *StyleCheckDialog::openPreferences()
+{
+    QCocoaPreferencesDialog *dialog = new QCocoaPreferencesDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->addPage(new SamplePreferencesPage("General", QCocoaIcon::PreferencesGeneral));
+    dialog->addPage(new SamplePreferencesPage("Advanced", QCocoaIcon::Advanced), true);
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+
+    return dialog;
+}
+
+void StyleCheckDialog::shootPopover()
+{
+    QWidget *anchor = findChild<QWidget *>("sc_open_popover");
+    activate();
+
+    QCocoaPopover *popover = openPopover(anchor);
+    const CGWindowID window = popoverWindow();
+    const QRect area(anchor->mapToGlobal(QPoint(0, 0)), anchor->size());
+
+    // a transient popover closes on Escape; the line tells whether it did
+    shootLater(m_shotDir, "sc_popover", area, Close::Escape, this, [this, popover] {
+        QTimer::singleShot(600, this, [this, popover] {
+            printf("stylecheck popover escape=%d\n", int(popoverWindow() == 0));
+            fflush(stdout);
+
+            popover->close();
+            nextMenu();
+        });
+    }, [window] { return window; });
+}
+
+void StyleCheckDialog::shootAlert()
+{
+    activate();
+
+    // exec() runs until Return presses the default button
+    const CGWindowID main = CGWindowID(reinterpret_cast<NSView *>(winId()).window.windowNumber);
+    shootLater(m_shotDir, "sc_alert", QRect(), Close::Return, nullptr, {}, [main] { return frontWindow(main); });
+
+    const int result = runAlert();
+
+    printf("stylecheck alert result=%d yes=%d\n", result, int(result == QMessageBox::Yes));
+    fflush(stdout);
+
+    QTimer::singleShot(800, this, &StyleCheckDialog::nextMenu);
+}
+
+void StyleCheckDialog::shootPreferences()
+{
+    QPointer<QDialog> dialog = openPreferences();
+    const CGWindowID window = CGWindowID(reinterpret_cast<NSView *>(dialog->winId()).window.windowNumber);
+
+    // the first page, then the second one the toolbar switches to, and the window closes
+    shootLater(m_shotDir, "sc_preferences", QRect(), Close::ByCaller, this, [this, dialog, window] {
+        if (dialog)
+            QMetaObject::invokeMethod(dialog, "toolbarButtonActivated", Q_ARG(int, 1));
+
+        shootLater(m_shotDir, "sc_preferences-2", QRect(), Close::ByCaller, this, [this, dialog] {
+            printf("stylecheck preferences title=\"%s\"\n", dialog ? qPrintable(dialog->windowTitle()) : "");
+            fflush(stdout);
+
+            if (dialog)
+                dialog->close();
+
+            QTimer::singleShot(600, this, &StyleCheckDialog::nextMenu);
+        }, [window] { return window; });
+    }, [window] { return window; });
+}
+
+void StyleCheckDialog::shootMenuBarPopover()
+{
+    // MFC makes the status item itself and gives it to QCocoaMenubarItem. The menu bar places a new item a moment
+    // later, and the popover opens under it only then
+    NSStatusItem *statusItem = [[[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength] retain];
+    statusItem.button.image = [NSImage imageWithSystemSymbolName:@"fan" accessibilityDescription:@"Style Check"];
+
+    QTimer::singleShot(1000, this, [this, statusItem] {
+        QCocoaMenubarItem *item = new QCocoaMenubarItem(this, WId(statusItem));
+        QCocoaPopover *popover = new QCocoaPopover(this, popoverContents());
+        popover->setPopoverBehavior(QCocoaPopover::PopoverBehavior::ApplicationDefined);
+        popover->show(item);
+
+        QTimer::singleShot(300, this, [this, statusItem, item, popover] {
+            const CGWindowID window = popoverWindow();
+
+            // the region under the item, in the coordinates of Qt, which count from the top of the main screen; none
+            // if the menu bar has no room for the item
+            NSButton *button = statusItem.button;
+            QRect area;
+
+            if (button.window)
+            {
+                const NSRect onScreen = [button.window convertRectToScreen:[button convertRect:button.bounds toView:nil]];
+                const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+                area = QRect(qRound(NSMidX(onScreen)) - 200, qRound(top - NSMaxY(onScreen)), 400, qRound(NSHeight(onScreen)));
+            }
+
+            printf("stylecheck menubar item=%d,%d popover=%u\n", area.center().x(), area.y(), window);
+            fflush(stdout);
+
+            shootLater(m_shotDir, "sc_menubar_popover", area, Close::ByCaller, this, [this, popover, item, statusItem] {
+                // the object goes while the popover closes with its animation, which AppKit reports later
+                popover->close();
+                delete popover; // and its contents
+                delete item;
+
+                [[NSStatusBar systemStatusBar] removeStatusItem:statusItem];
+                [statusItem release];
+
+                QTimer::singleShot(1500, this, &StyleCheckDialog::nextMenu);
+            }, [window] { return window; });
+        });
+    });
+}
+
 void StyleCheckDialog::tour(const QString &dir, bool menus)
 {
     m_shotDir = dir;
@@ -916,6 +1433,10 @@ void StyleCheckDialog::shootTab()
     QWidget *page = m_tabs->currentWidget();
     const QString tab = page->objectName().mid(kTabPrefix.size());
 
+    // A window that becomes active again without a focus widget gives the focus to the first control of the page, so
+    // the focus is settled once more just before the shot
+    focusPage();
+
     printf("stylecheck tab %s active=%d focus=%d\n", qPrintable(tab), int(isActiveWindow()), int(m_focusEdit->hasFocus()));
 
     // the page itself, which the analyzer crops, and the controls on it; those on the hidden pages of the tab widgets
@@ -971,7 +1492,37 @@ void StyleCheckDialog::tabShot()
     const QString tab = m_tabs->currentWidget()->objectName().mid(kTabPrefix.size());
 
     m_menus = m_menuShots ? menuSteps(tab) : QStringList();
-    nextMenu();
+
+    if (tab == "cocoatabs")
+        switchCocoaTab();
+    else
+        nextMenu();
+}
+
+void StyleCheckDialog::switchCocoaTab()
+{
+    // The third tab of the native bar is clicked: the glass slides to it in about half a second, and QTabWidget shows
+    // its page. A window that isn't active may take the click for its activation only
+    QTabWidget *tabs = m_tabs->currentWidget()->findChild<QTabWidget *>("sc_cocoa_tabs_regular");
+    NSSegmentedControl *bar = nativeTabBar(tabs);
+
+    if (bar)
+        postClick(bar, NSMakePoint(NSWidth(bar.bounds) * 5 / 6, NSHeight(bar.bounds) / 2));
+
+    QTimer::singleShot(1200, this, [this, tabs, bar] {
+        printf("stylecheck switch sc_cocoa_tabs_regular native=%d current=%d changes=%d segment=%ld active=%d\n",
+               int(bar != nil), tabs->currentIndex(), m_cocoaTabChanges, long(bar ? bar.selectedSegment : -1),
+               int(isActiveWindow()));
+        fflush(stdout);
+
+        const CGWindowID window = CGWindowID(reinterpret_cast<NSView *>(winId()).window.windowNumber);
+        const QByteArray file = m_shotDir.toUtf8() + "/cocoatabs-switched.png";
+
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            shootWindow(window, file);
+            QMetaObject::invokeMethod(this, &StyleCheckDialog::nextMenu, Qt::QueuedConnection);
+        });
+    });
 }
 
 void StyleCheckDialog::nextMenu()
@@ -984,6 +1535,19 @@ void StyleCheckDialog::nextMenu()
 
     const QStringList step = m_menus.takeFirst().split(' ');
     const QString name = step.first();
+
+    // the windows of qcocoacontrols open and close in ways of their own
+    if (name == "popover")
+        return shootPopover();
+
+    if (name == "alert")
+        return shootAlert();
+
+    if (name == "preferences")
+        return shootPreferences();
+
+    if (name == "menubar")
+        return shootMenuBarPopover();
     const bool select = step.size() > 1;
     const QString file = select ? name + "-select" : name;
 
@@ -1017,7 +1581,7 @@ void StyleCheckDialog::nextMenu()
     {
         // The list of QComboBox doesn't block: the tour goes on when the other thread has shot it and posted Escape.
         // Half a second later the key has reached the list, and if it hasn't, the list is closed here
-        shootLater(m_shotDir, file, area, select, this, [this, combo] {
+        shootLater(m_shotDir, file, area, select ? Close::NextItem : Close::Escape, this, [this, combo] {
             QTimer::singleShot(500, this, [this, combo] {
                 combo->hidePopup();
                 nextMenu();
@@ -1028,7 +1592,7 @@ void StyleCheckDialog::nextMenu()
         return;
     }
 
-    shootLater(m_shotDir, file, area, select);
+    shootLater(m_shotDir, file, area, select ? Close::NextItem : Close::Escape);
 
     if (combo)
     {

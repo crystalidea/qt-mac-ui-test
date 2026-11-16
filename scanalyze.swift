@@ -171,8 +171,8 @@ for (name, rect) in rects {
         continue
     }
 
-    // the item views and the tab widgets are looked at, not measured
-    if ["sc_table", "sc_tree", "sc_list"].contains(name) || name.contains("_tabs_") {
+    // the item views, the tab widgets and the list with gradient buttons are looked at, not measured
+    if ["sc_table", "sc_tree", "sc_list"].contains(name) || name.contains("_tabs_") || name.hasSuffix("_gradient") {
         first.save(pixels(rect, margin: 2), to: "\(outdir)/\(name).png")
         print("crop    \(pad(name)) \(name).png")
         continue
