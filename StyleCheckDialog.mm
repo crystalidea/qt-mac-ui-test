@@ -1074,7 +1074,7 @@ QWidget *StyleCheckDialog::cocoaTabSection()
 
     const QString checks = regular->hasNativeTabBar()
         ? "QCocoaTabWidget of qcocoacontrols next to NSTabView"
-        : "QCocoaTabWidget of qcocoacontrols, a plain QTabWidget here: its native bar needs macOS 27 and Liquid Glass";
+        : "QCocoaTabWidget of qcocoacontrols, a plain QTabWidget here: its native bar needs macOS 26 and Liquid Glass";
 
     QGridLayout *grid = nullptr;
     QWidget *tab = section("sc_group_cocoatabs", checks, grid);
