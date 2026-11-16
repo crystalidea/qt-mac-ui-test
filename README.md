@@ -139,6 +139,24 @@ The windows of qcocoacontrols (the Popovers tab, 2026-11-16):
 
 On macOS 26.6.2 (2026-11-16, a Parallels virtual machine, both appearances) the sizes are the same as on macOS 27.0: push buttons, spin boxes, line edits, lists, pull-down buttons and the controls of qcocoacontrols, with the Auto and Custom switch 115 × 24 pt and the AppKit pull-down button with a title 1 pt wider than QCocoaButtonActionMenu. NSTabView of macOS 26 fills the selected tab with the accent color, as QMacStyle does, and has no glass: the tabs role of NSSegmentedControl comes with macOS 27. QCocoaTabWidget shows an NSSegmentedControl without the role there, as wide as the bar of NSTabView, which gives each tab about 4.5 pt more room than the control needs: the bar, the pane and the click on the third tab (`native=1 current=2`) are the same as in NSTabView, and unlike on macOS 27 the disabled tabs are gray. The popovers, the alert and the preferences window work as on macOS 27, and Escape closes the popover. The first shot of a new session in the virtual machine brings up the request for the Screen Recording permission, and the window is inactive meanwhile.
 
+On macOS 12.7.6 (2026-11-16, a Parallels virtual machine, both appearances) Qt and qcocoacontrols keep the earlier design, `Liquid Glass: Qt no, qcocoacontrols no`, and the patches change nothing:
+
+- push buttons are as tall as in AppKit within half a point (22, 18 and 15 pt) and wider, as on macOS 27: regular +7, small +15, mini +5 pt;
+- QSpinBox is 78.5 × 21 pt against 78.5 × 21.5 in AppKit, and QLineEdit 181 × 20.5 against 179 × 20.5 in a widget 2 pt wider, as on macOS 27;
+- the progress bars fill 0.60 against 0.61, and the busy one moves;
+- the menu of QCocoaComboBox shows the check mark, the separator, the icons and the disabled item, and choosing with the keyboard gives `current=2`.
+
+QMacStyle fills the selected tab of QTabWidget with the accent color, while NSTabView of macOS 12 marks it with a gray segment. QCocoaTabWidget is a plain QTabWidget there (`native=0`).
+
+The help, textured and segmented buttons, QCocoaSlider (160 × 28 pt) and QCocoaBox match AppKit. QCocoaButtonActionMenu is wider than the AppKit pull-down button with the same items: the widget with the title is 231 against 193 pt, because the menu Qt makes of a QMenu is wider (227 against 189 pt). The icon-only one keeps its 44 × 28 pt.
+
+The popovers, the alert and the preferences window work, and Escape closes the popover.
+
+The virtual machine shows two differences from a Mac at hand:
+
+- nothing there has the Screen Recording permission, so the window was shot from inside: a library loaded with `DYLD_INSERT_LIBRARIES` took the shots instead of `screencapture`, with `CGWindowListCreateImage`, which needs no permission for the windows of its own app;
+- an NSMenu open in an active app on macOS 12 doesn't take the keys the window posts to its own event queue (macOS 26 and 27 do, and so does an inactive app on macOS 12), so each menu was closed with a real key sent to the virtual machine (`prlctl send-key-event`).
+
 ## Cleanup
 
 Everything built goes to `build/` and every shot to `shots/`; Git ignores both.
