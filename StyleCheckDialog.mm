@@ -1354,6 +1354,20 @@ void StyleCheckDialog::shootMenuBarPopover()
     });
 }
 
+// A tour closes a menu with an Escape it posts to the event queue of the app. A menu that didn't open or doesn't take
+// posted keys, as on macOS 12, leaves the key to the window, and a tour ends only after its last tab. The Close button
+// and Cmd+Q still end a tour
+void StyleCheckDialog::keyPressEvent(QKeyEvent *event)
+{
+    if (!m_shotDir.isEmpty() && event->key() == Qt::Key_Escape)
+    {
+        event->accept();
+        return;
+    }
+
+    QDialog::keyPressEvent(event);
+}
+
 void StyleCheckDialog::tour(const QString &dir, bool menus)
 {
     m_shotDir = dir;

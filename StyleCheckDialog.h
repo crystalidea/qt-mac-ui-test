@@ -35,6 +35,11 @@ public:
 
     void activate();
 
+protected:
+
+    // Escape closes the window, except on a tour
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
 
     QWidget *progressSection();
