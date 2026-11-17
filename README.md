@@ -157,6 +157,8 @@ The virtual machine shows two differences from a Mac at hand:
 - nothing there has the Screen Recording permission, so the window was shot from inside: a library loaded with `DYLD_INSERT_LIBRARIES` took the shots instead of `screencapture`, with `CGWindowListCreateImage`, which needs no permission for the windows of its own app;
 - an NSMenu open in an active app on macOS 12 doesn't take the keys the window posts to its own event queue (macOS 26 and 27 do, and so does an inactive app on macOS 12), so each menu was closed with a real key sent to the virtual machine (`prlctl send-key-event`).
 
+On macOS 13.6 (2026-11-17, a Parallels virtual machine, both appearances) everything is as on macOS 12.7.6, except that QCocoaButtonActionMenu with the title is 4 pt wider still: the menu Qt makes of a QMenu is 231 pt wide against 189 pt in AppKit, and the widget is 235 against 193 pt. QSpinBox and the AppKit field with its stepper are both 21 pt tall. NSSlider keeps the alignment insets of macOS 12, and QCocoaSlider is 160 × 28 pt with the whole knob. The window was shot from inside, and an open NSMenu doesn't take the posted keys there either, so each menu was again closed with a real key.
+
 ## Cleanup
 
 Everything built goes to `build/` and every shot to `shots/`; Git ignores both.
